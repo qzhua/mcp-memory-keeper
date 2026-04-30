@@ -1509,7 +1509,7 @@ Checkpoint: ${autoSave ? `git-commit-${new Date().toISOString()}` : 'None'}`,
         includeMetadata,
       } = args;
       // Normalize: accept both legacy string and new array input
-      const query: string | string[] = Array.isArray(rawQuery) ? rawQuery : rawQuery;
+      const query: string | string[] = rawQuery;
       const targetSessionId = specificSessionId || currentSessionId || ensureSession();
 
       // Use enhanced search for all cases
@@ -2943,7 +2943,7 @@ Event ID: ${id.substring(0, 8)}`,
         includeMetadata = false,
       } = args;
       // Normalize: accept both legacy string and new array input
-      const query: string | string[] = Array.isArray(rawQueryAll) ? rawQueryAll : rawQueryAll;
+      const query: string | string[] = rawQueryAll;
 
       // Enhanced pagination validation with proper error handling
       const paginationValidation = validatePaginationParams({ limit: rawLimit, offset: rawOffset });
