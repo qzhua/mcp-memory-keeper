@@ -1493,7 +1493,7 @@ Checkpoint: ${autoSave ? `git-commit-${new Date().toISOString()}` : 'None'}`,
     // Phase 3: Context Search
     case 'context_search': {
       const {
-        query,
+        query: rawQuery,
         searchIn = ['key', 'value'],
         sessionId: specificSessionId,
         category,
@@ -1508,6 +1508,8 @@ Checkpoint: ${autoSave ? `git-commit-${new Date().toISOString()}` : 'None'}`,
         priorities,
         includeMetadata,
       } = args;
+      // Normalize: accept both legacy string and new array input
+      const query: string | string[] = Array.isArray(rawQuery) ? rawQuery : rawQuery;
       const targetSessionId = specificSessionId || currentSessionId || ensureSession();
 
       // Use enhanced search for all cases
@@ -1528,12 +1530,14 @@ Checkpoint: ${autoSave ? `git-commit-${new Date().toISOString()}` : 'None'}`,
         includeMetadata,
       });
 
+      const queryDisplay = Array.isArray(query) ? query.join(' + ') : query;
+
       if (result.items.length === 0) {
         return {
           content: [
             {
               type: 'text',
-              text: `No results found for: "${query}"`,
+              text: `No results found for: "${queryDisplay}"`,
             },
           ],
         };
@@ -1585,7 +1589,7 @@ Checkpoint: ${autoSave ? `git-commit-${new Date().toISOString()}` : 'None'}`,
         content: [
           {
             type: 'text',
-            text: `Found ${result.items.length} results for "${query}":\n\n${resultText}`,
+            text: `Found ${result.items.length} results for "${queryDisplay}":\n\n${resultText}`,
           },
         ],
       };
@@ -2922,7 +2926,7 @@ Event ID: ${id.substring(0, 8)}`,
 
     case 'context_search_all': {
       const {
-        query,
+        query: rawQueryAll,
         sessions,
         includeShared = true,
         limit: rawLimit = 25,
@@ -2938,6 +2942,8 @@ Event ID: ${id.substring(0, 8)}`,
         searchIn = ['key', 'value'],
         includeMetadata = false,
       } = args;
+      // Normalize: accept both legacy string and new array input
+      const query: string | string[] = Array.isArray(rawQueryAll) ? rawQueryAll : rawQueryAll;
 
       // Enhanced pagination validation with proper error handling
       const paginationValidation = validatePaginationParams({ limit: rawLimit, offset: rawOffset });
@@ -2977,12 +2983,14 @@ Event ID: ${id.substring(0, 8)}`,
           );
         }
 
+        const queryAllDisplay = Array.isArray(query) ? query.join(' + ') : query;
+
         if (result.items.length === 0) {
           return {
             content: [
               {
                 type: 'text',
-                text: `No results found for: "${query}"${result.totalCount > 0 ? ` (showing page ${result.pagination.currentPage} of ${result.pagination.totalPages})` : ''}`,
+                text: `No results found for: "${queryAllDisplay}"${result.totalCount > 0 ? ` (showing page ${result.pagination.currentPage} of ${result.pagination.totalPages})` : ''}`,
               },
             ],
           };
@@ -4153,7 +4161,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       inputSchema: {
         type: 'object',
         properties: {
-          query: { type: 'string', description: 'Search query' },
+          query: {
+            type: 'array',
+            items: { type: 'string' },
+            description:
+              'Search keywords - provide one or more keywords as an array (e.g. ["auth", "config"]). All keywords must match (AND logic). A single-element array performs the same as a plain keyword search.',
+          },
           searchIn: {
             type: 'array',
             items: { type: 'string', enum: ['key', 'value'] },
@@ -4260,7 +4273,12 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
       inputSchema: {
         type: 'object',
         properties: {
-          query: { type: 'string', description: 'Search query' },
+          query: {
+            type: 'array',
+            items: { type: 'string' },
+            description:
+              'Search keywords - provide one or more keywords as an array (e.g. ["auth", "config"]). All keywords must match (AND logic). A single-element array performs the same as a plain keyword search.',
+          },
           sessions: {
             type: 'array',
             items: { type: 'string' },

@@ -704,4 +704,111 @@ describe('Context Search Handler Integration Tests', () => {
       expect(tableExists).toBeTruthy();
     });
   });
+
+  describe('Multi-keyword Array Search (searchEnhanced)', () => {
+    beforeEach(() => {
+      // Items: only 'auth_config' has both 'auth' in key AND 'config' in value
+      const items = [
+        {
+          id: uuidv4(),
+          session_id: testSessionId,
+          key: 'auth_config',
+          value: 'Authentication configuration for the app',
+        },
+        {
+          id: uuidv4(),
+          session_id: testSessionId,
+          key: 'db_connection',
+          value: 'Database connection string',
+        },
+        {
+          id: uuidv4(),
+          session_id: testSessionId,
+          key: 'user_auth',
+          value: 'User authentication methods',
+        },
+      ];
+      const stmt = db.prepare(
+        'INSERT INTO context_items (id, session_id, key, value) VALUES (?, ?, ?, ?)'
+      );
+      items.forEach(item => stmt.run(item.id, item.session_id, item.key, item.value));
+    });
+
+    it('should return the same results as a single-string query when given a one-element array', () => {
+      const singleStr = contextRepo.searchEnhanced({
+        query: 'auth',
+        sessionId: testSessionId,
+      });
+      const singleArr = contextRepo.searchEnhanced({
+        query: ['auth'],
+        sessionId: testSessionId,
+      });
+      expect(singleArr.items.map(i => i.key).sort()).toEqual(
+        singleStr.items.map(i => i.key).sort()
+      );
+    });
+
+    it('should apply AND logic and return only items matching all keywords', () => {
+      // 'auth' appears in key/value of auth_config and user_auth
+      // 'config' appears in value of auth_config only
+      const result = contextRepo.searchEnhanced({
+        query: ['auth', 'config'],
+        sessionId: testSessionId,
+      });
+      expect(result.items.length).toBe(1);
+      expect(result.items[0].key).toBe('auth_config');
+    });
+
+    it('should return no results when no item matches all keywords', () => {
+      const result = contextRepo.searchEnhanced({
+        query: ['auth', 'database'],
+        sessionId: testSessionId,
+      });
+      expect(result.items.length).toBe(0);
+    });
+
+    it('should handle three keywords with AND logic', () => {
+      // Add an item that contains all three words
+      db.prepare('INSERT INTO context_items (id, session_id, key, value) VALUES (?, ?, ?, ?)').run(
+        uuidv4(),
+        testSessionId,
+        'auth_db_config',
+        'Authentication database configuration'
+      );
+
+      const result = contextRepo.searchEnhanced({
+        query: ['auth', 'database', 'config'],
+        sessionId: testSessionId,
+      });
+      expect(result.items.length).toBe(1);
+      expect(result.items[0].key).toBe('auth_db_config');
+    });
+
+    it('should filter empty strings in the keyword array', () => {
+      // ['auth', ''] should behave the same as ['auth']
+      const withEmpty = contextRepo.searchEnhanced({
+        query: ['auth', ''],
+        sessionId: testSessionId,
+      });
+      const withoutEmpty = contextRepo.searchEnhanced({
+        query: ['auth'],
+        sessionId: testSessionId,
+      });
+      expect(withEmpty.items.map(i => i.key).sort()).toEqual(
+        withoutEmpty.items.map(i => i.key).sort()
+      );
+    });
+
+    it('should respect searchIn when using array query', () => {
+      // 'auth' in key only → user_auth, auth_config (not db_connection)
+      // 'config' in key only → auth_config
+      const result = contextRepo.searchEnhanced({
+        query: ['auth', 'config'],
+        sessionId: testSessionId,
+        searchIn: ['key'],
+      });
+      expect(result.items.length).toBe(1);
+      expect(result.items[0].key).toBe('auth_config');
+    });
+  });
 });

@@ -66,6 +66,27 @@ export class ContextRepository extends BaseRepository {
     return null;
   }
 
+  private buildKeywordConditions(keywords: string[], searchIn: string[], params: any[]): string {
+    const clauses = keywords
+      .filter(k => k.length > 0)
+      .map(keyword => {
+        const escaped = keyword.replace(/[%_\\]/g, `${ContextRepository.SQLITE_ESCAPE_CHAR}$&`);
+        const conditions: string[] = [];
+        if (searchIn.includes('key')) {
+          conditions.push(`key LIKE ? ESCAPE '${ContextRepository.SQLITE_ESCAPE_CHAR}'`);
+          params.push(`%${escaped}%`);
+        }
+        if (searchIn.includes('value')) {
+          conditions.push(`value LIKE ? ESCAPE '${ContextRepository.SQLITE_ESCAPE_CHAR}'`);
+          params.push(`%${escaped}%`);
+        }
+        return conditions.length > 0 ? `(${conditions.join(' OR ')})` : null;
+      })
+      .filter((c): c is string => c !== null);
+
+    return clauses.join(' AND ');
+  }
+
   private convertToGlobPattern(pattern: string): string {
     // SQLite GLOB supports character classes with brackets, so preserve them
     // Only convert regex-style patterns to GLOB
@@ -205,7 +226,7 @@ export class ContextRepository extends BaseRepository {
 
   // Enhanced search method with all new parameters
   searchEnhanced(options: {
-    query: string;
+    query: string | string[];
     sessionId: string;
     searchIn?: string[];
     category?: string;
@@ -244,24 +265,13 @@ export class ContextRepository extends BaseRepository {
     const params: any[] = [sessionId];
 
     // Add search query with searchIn support
-    if (query) {
-      const searchConditions: string[] = [];
-
-      // Escape special characters for LIKE operator
-      const escapedQuery = query.replace(/[%_\\]/g, `${ContextRepository.SQLITE_ESCAPE_CHAR}$&`);
-
-      if (searchIn.includes('key')) {
-        searchConditions.push(`key LIKE ? ESCAPE '${ContextRepository.SQLITE_ESCAPE_CHAR}'`);
-        params.push(`%${escapedQuery}%`);
-      }
-
-      if (searchIn.includes('value')) {
-        searchConditions.push(`value LIKE ? ESCAPE '${ContextRepository.SQLITE_ESCAPE_CHAR}'`);
-        params.push(`%${escapedQuery}%`);
-      }
-
-      if (searchConditions.length > 0) {
-        sql += ` AND (${searchConditions.join(' OR ')})`;
+    if (query && (Array.isArray(query) ? query.length > 0 : true)) {
+      const keywords = Array.isArray(query) ? query.filter(k => k.length > 0) : [query];
+      if (keywords.length > 0) {
+        const clause = this.buildKeywordConditions(keywords, searchIn, params);
+        if (clause) {
+          sql += ` AND ${clause}`;
+        }
       }
     }
 
@@ -480,7 +490,7 @@ export class ContextRepository extends BaseRepository {
 
   // Enhanced search across sessions with pagination support
   searchAcrossSessionsEnhanced(options: {
-    query: string;
+    query: string | string[];
     currentSessionId?: string;
     sessions?: string[];
     includeShared?: boolean;
@@ -546,22 +556,13 @@ export class ContextRepository extends BaseRepository {
     }
 
     // Add search query with searchIn support
-    if (query) {
-      const searchConditions: string[] = [];
-      const escapedQuery = query.replace(/[%_\\]/g, `${ContextRepository.SQLITE_ESCAPE_CHAR}$&`);
-
-      if (searchIn.includes('key')) {
-        searchConditions.push(`key LIKE ? ESCAPE '${ContextRepository.SQLITE_ESCAPE_CHAR}'`);
-        params.push(`%${escapedQuery}%`);
-      }
-
-      if (searchIn.includes('value')) {
-        searchConditions.push(`value LIKE ? ESCAPE '${ContextRepository.SQLITE_ESCAPE_CHAR}'`);
-        params.push(`%${escapedQuery}%`);
-      }
-
-      if (searchConditions.length > 0) {
-        sql += ` AND (${searchConditions.join(' OR ')})`;
+    if (query && (Array.isArray(query) ? query.length > 0 : true)) {
+      const keywords = Array.isArray(query) ? query.filter(k => k.length > 0) : [query];
+      if (keywords.length > 0) {
+        const clause = this.buildKeywordConditions(keywords, searchIn, params);
+        if (clause) {
+          sql += ` AND ${clause}`;
+        }
       }
     }
 
