@@ -573,6 +573,7 @@ server.setRequestHandler(CallToolRequestSchema, async request => {
         priority = 'normal',
         private: isPrivate = false,
         channel,
+        workspace,
       } = args;
 
       try {
@@ -595,6 +596,7 @@ server.setRequestHandler(CallToolRequestSchema, async request => {
             priority: priority as 'high' | 'normal' | 'low',
             isPrivate,
             channel,
+            workspace,
           });
 
           return {
@@ -614,6 +616,7 @@ server.setRequestHandler(CallToolRequestSchema, async request => {
           priority: priority as 'high' | 'normal' | 'low',
           isPrivate,
           channel,
+          workspace,
         });
 
         // Create embedding for semantic search
@@ -654,6 +657,7 @@ server.setRequestHandler(CallToolRequestSchema, async request => {
               priority: priority as 'high' | 'normal' | 'low',
               isPrivate,
               channel,
+              workspace,
             });
 
             return {
@@ -702,6 +706,8 @@ server.setRequestHandler(CallToolRequestSchema, async request => {
         createdBefore,
         keyPattern,
         priorities,
+        workspace,
+        workspaceOnly,
       } = args;
       const targetSessionId = specificSessionId || currentSessionId || ensureSession();
 
@@ -736,6 +742,8 @@ server.setRequestHandler(CallToolRequestSchema, async request => {
           keyPattern,
           priorities,
           includeMetadata,
+          workspace,
+          workspaceOnly,
         });
 
         if (result.items.length === 0) {
@@ -1507,6 +1515,8 @@ Checkpoint: ${autoSave ? `git-commit-${new Date().toISOString()}` : 'None'}`,
         keyPattern,
         priorities,
         includeMetadata,
+        workspace,
+        workspaceOnly,
       } = args;
       // Normalize: accept both legacy string and new array input
       const query: string | string[] = rawQuery;
@@ -1528,6 +1538,8 @@ Checkpoint: ${autoSave ? `git-commit-${new Date().toISOString()}` : 'None'}`,
         keyPattern,
         priorities,
         includeMetadata,
+        workspace,
+        workspaceOnly,
       });
 
       const queryDisplay = Array.isArray(query) ? query.join(' + ') : query;
@@ -2941,6 +2953,8 @@ Event ID: ${id.substring(0, 8)}`,
         keyPattern,
         searchIn = ['key', 'value'],
         includeMetadata = false,
+        workspace,
+        workspaceOnly,
       } = args;
       // Normalize: accept both legacy string and new array input
       const query: string | string[] = rawQueryAll;
@@ -2974,6 +2988,8 @@ Event ID: ${id.substring(0, 8)}`,
           createdBefore,
           keyPattern,
           includeMetadata,
+          workspace,
+          workspaceOnly,
         });
 
         // PAGINATION VALIDATION: Ensure pagination is working as expected
@@ -3972,6 +3988,11 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             type: 'string',
             description: 'Channel to organize this item (uses session default if not provided)',
           },
+          workspace: {
+            type: 'string',
+            description:
+              'Workspace identifier (e.g., project directory or project name) to associate this item with. Defaults to the session working directory if not provided.',
+          },
         },
         required: ['key', 'value'],
       },
@@ -4027,6 +4048,16 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             type: 'array',
             items: { type: 'string', enum: ['high', 'normal', 'low'] },
             description: 'Filter by priority levels',
+          },
+          workspace: {
+            type: 'string',
+            description:
+              'Workspace identifier to prioritize results from. Items from this workspace are returned first.',
+          },
+          workspaceOnly: {
+            type: 'boolean',
+            description: 'If true, only return items from the specified workspace. Default: false',
+            default: false,
           },
         },
       },
@@ -4221,6 +4252,16 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
             type: 'boolean',
             description: 'Include timestamps and size info',
           },
+          workspace: {
+            type: 'string',
+            description:
+              'Workspace identifier to prioritize results from. Items from this workspace are returned first.',
+          },
+          workspaceOnly: {
+            type: 'boolean',
+            description: 'If true, only return items from the specified workspace. Default: false',
+            default: false,
+          },
         },
         required: ['query'],
       },
@@ -4350,6 +4391,16 @@ server.setRequestHandler(ListToolsRequestSchema, async () => {
           includeMetadata: {
             type: 'boolean',
             description: 'Include timestamps and size info',
+            default: false,
+          },
+          workspace: {
+            type: 'string',
+            description:
+              'Workspace identifier to prioritize results from. Items from this workspace are returned first.',
+          },
+          workspaceOnly: {
+            type: 'boolean',
+            description: 'If true, only return items from the specified workspace. Default: false',
             default: false,
           },
         },

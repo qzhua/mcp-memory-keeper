@@ -131,17 +131,26 @@ export class ContextRepository extends BaseRepository {
     const size = this.calculateSize(input.value);
 
     // Determine channel - use explicit channel, or session default, or 'general'
+    // Also fetch working_directory for workspace fallback in the same query
     let channel = input.channel;
-    if (!channel) {
-      const sessionStmt = this.db.prepare('SELECT default_channel FROM sessions WHERE id = ?');
+    let workspace = input.workspace || null;
+    if (!channel || !workspace) {
+      const sessionStmt = this.db.prepare(
+        'SELECT default_channel, working_directory FROM sessions WHERE id = ?'
+      );
       const session = sessionStmt.get(sessionId) as any;
-      channel = session?.default_channel || 'general';
+      if (!channel) {
+        channel = session?.default_channel || 'general';
+      }
+      if (!workspace) {
+        workspace = session?.working_directory || null;
+      }
     }
 
     const stmt = this.db.prepare(`
       INSERT OR REPLACE INTO context_items 
-      (id, session_id, key, value, category, priority, metadata, size, is_private, channel)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      (id, session_id, key, value, category, priority, metadata, size, is_private, channel, workspace)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
 
     stmt.run(
@@ -154,7 +163,8 @@ export class ContextRepository extends BaseRepository {
       input.metadata || null,
       size,
       input.isPrivate ? 1 : 0,
-      channel
+      channel,
+      workspace
     );
 
     return this.getById(id)!;
@@ -240,6 +250,8 @@ export class ContextRepository extends BaseRepository {
     keyPattern?: string;
     priorities?: string[];
     includeMetadata?: boolean;
+    workspace?: string;
+    workspaceOnly?: boolean;
   }): { items: ContextItem[]; totalCount: number } {
     const {
       query,
@@ -255,6 +267,8 @@ export class ContextRepository extends BaseRepository {
       createdBefore,
       keyPattern,
       priorities,
+      workspace,
+      workspaceOnly = false,
     } = options;
 
     // Build the base query with proper privacy filtering
@@ -334,11 +348,21 @@ export class ContextRepository extends BaseRepository {
       params.push(...priorities);
     }
 
+    if (workspace && workspaceOnly) {
+      sql += ' AND workspace = ?';
+      params.push(workspace);
+    }
+
     // Count total before pagination
     const totalCount = this.getTotalCount(sql, params);
 
-    // Add sorting
-    sql += ` ORDER BY ${this.buildSortClause(sort)}`;
+    // Add sorting - when workspace provided, prioritize items from that workspace first
+    if (workspace && !workspaceOnly) {
+      sql += ` ORDER BY CASE WHEN workspace = ? THEN 0 ELSE 1 END, ${this.buildSortClause(sort)}`;
+      params.push(workspace);
+    } else {
+      sql += ` ORDER BY ${this.buildSortClause(sort)}`;
+    }
 
     // Add pagination
     sql = this.addPaginationToQuery(sql, params, limit, offset);
@@ -506,6 +530,8 @@ export class ContextRepository extends BaseRepository {
     createdBefore?: string;
     keyPattern?: string;
     includeMetadata?: boolean;
+    workspace?: string;
+    workspaceOnly?: boolean;
   }): { items: ContextItem[]; totalCount: number; pagination: any } {
     const {
       query,
@@ -523,6 +549,8 @@ export class ContextRepository extends BaseRepository {
       createdAfter,
       createdBefore,
       keyPattern,
+      workspace,
+      workspaceOnly = false,
     } = options;
 
     // Validate pagination parameters
@@ -621,11 +649,21 @@ export class ContextRepository extends BaseRepository {
       params.push(...priorities);
     }
 
+    if (workspace && workspaceOnly) {
+      sql += ' AND workspace = ?';
+      params.push(workspace);
+    }
+
     // Count total before pagination
     const totalCount = this.getTotalCount(sql, params);
 
-    // Add sorting
-    sql += ` ORDER BY ${this.buildSortClause(sort)}`;
+    // Add sorting - when workspace provided, prioritize items from that workspace first
+    if (workspace && !workspaceOnly) {
+      sql += ` ORDER BY CASE WHEN workspace = ? THEN 0 ELSE 1 END, ${this.buildSortClause(sort)}`;
+      params.push(workspace);
+    } else {
+      sql += ` ORDER BY ${this.buildSortClause(sort)}`;
+    }
 
     // Add pagination
     sql = this.addPaginationToQuery(sql, params, validLimit, validOffset);
@@ -746,6 +784,8 @@ export class ContextRepository extends BaseRepository {
     keyPattern?: string;
     priorities?: string[];
     includeMetadata?: boolean;
+    workspace?: string;
+    workspaceOnly?: boolean;
   }): { items: ContextItem[]; totalCount: number } {
     const {
       sessionId,
@@ -760,6 +800,8 @@ export class ContextRepository extends BaseRepository {
       createdBefore,
       keyPattern,
       priorities,
+      workspace,
+      workspaceOnly = false,
     } = options;
 
     // Apply default pagination parameters
@@ -854,11 +896,21 @@ export class ContextRepository extends BaseRepository {
       params.push(...priorities);
     }
 
+    if (workspace && workspaceOnly) {
+      sql += ' AND workspace = ?';
+      params.push(workspace);
+    }
+
     // Count total before pagination
     const totalCount = this.getTotalCount(sql, params);
 
-    // Add sorting
-    sql += ` ORDER BY ${this.buildSortClause(effectiveSort)}`;
+    // Add sorting - when workspace provided, prioritize items from that workspace first
+    if (workspace && !workspaceOnly) {
+      sql += ` ORDER BY CASE WHEN workspace = ? THEN 0 ELSE 1 END, ${this.buildSortClause(effectiveSort)}`;
+      params.push(workspace);
+    } else {
+      sql += ` ORDER BY ${this.buildSortClause(effectiveSort)}`;
+    }
 
     // Add pagination
     sql = this.addPaginationToQuery(sql, params, effectiveLimit, validOffset);
