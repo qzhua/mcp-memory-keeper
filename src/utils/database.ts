@@ -52,6 +52,9 @@ export class DatabaseManager {
 
     // Set up maintenance triggers
     this.setupMaintenanceTriggers();
+
+    // Create FTS5 index for full-text search (jieba-tokenized content)
+    this.setupFtsIndex();
   }
 
   private createTables(): void {
@@ -426,6 +429,26 @@ export class DatabaseManager {
       BEGIN
         UPDATE feature_flags SET updated_at = CURRENT_TIMESTAMP WHERE id = NEW.id;
       END;
+    `);
+  }
+
+  /**
+   * Creates the FTS5 virtual table used for full-text search.
+   *
+   * The FTS5 table stores pre-tokenized text (jieba segmented, space-joined)
+   * for both the key and value columns of context_items.  Because SQLite
+   * triggers cannot call Node.js code, synchronisation is handled at the
+   * application layer (see ContextRepository).
+   */
+  private setupFtsIndex(): void {
+    this.db.exec(`
+      CREATE VIRTUAL TABLE IF NOT EXISTS context_items_fts
+      USING fts5(
+        id        UNINDEXED,
+        key_tokens,
+        value_tokens,
+        tokenize  = 'unicode61'
+      );
     `);
   }
 

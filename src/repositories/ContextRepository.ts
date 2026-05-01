@@ -2,6 +2,7 @@ import { BaseRepository } from './BaseRepository.js';
 import { ContextItem, CreateContextItemInput } from '../types/entities.js';
 import { ensureSQLiteFormat } from '../utils/timestamps.js';
 import { validateKey } from '../utils/validation.js';
+import { tokenizeForIndex, buildFtsQuery } from '../utils/tokenizer.js';
 
 // Type for valid sort options (for documentation)
 type _SortOption =
@@ -18,6 +19,96 @@ type _SortOption =
 export class ContextRepository extends BaseRepository {
   // Constants
   private static readonly SQLITE_ESCAPE_CHAR = '\\';
+
+  // Set to true after a full FTS rebuild has been performed in this process.
+  private ftsReady = false;
+
+  // ---------------------------------------------------------------------------
+  // FTS5 helpers
+  // ---------------------------------------------------------------------------
+
+  /**
+   * Ensures the FTS5 index is fully populated before running any FTS query.
+   * Compares the FTS row count to context_items on first call in this process;
+   * if they differ (e.g. rows were inserted via raw SQL in tests, or the index
+   * was cleared), a full rebuild is triggered automatically.
+   */
+  private ensureFtsReady(): void {
+    if (this.ftsReady) return;
+
+    const ftsCount = (
+      this.db
+        .prepare(
+          `SELECT COUNT(*) as n FROM context_items_fts
+                  WHERE id != '__needs_rebuild__'`
+        )
+        .get() as any
+    ).n as number;
+
+    const itemCount = (this.db.prepare('SELECT COUNT(*) as n FROM context_items').get() as any)
+      .n as number;
+
+    if (ftsCount < itemCount) {
+      this.populateFts();
+    } else {
+      this.ftsReady = true;
+    }
+  }
+
+  /**
+   * Re-builds the entire FTS5 index from scratch.
+   * Runs inside a transaction for speed and atomicity.
+   */
+  populateFts(): void {
+    this.db.transaction(() => {
+      this.db.exec('DELETE FROM context_items_fts');
+      const rows = this.db.prepare('SELECT id, key, value FROM context_items').all() as Array<{
+        id: string;
+        key: string;
+        value: string;
+      }>;
+      const ins = this.db.prepare(
+        'INSERT INTO context_items_fts(id, key_tokens, value_tokens) VALUES (?, ?, ?)'
+      );
+      for (const row of rows) {
+        ins.run(row.id, tokenizeForIndex(row.key), tokenizeForIndex(row.value));
+      }
+    })();
+    this.ftsReady = true;
+  }
+
+  private ftsUpsert(id: string, key: string, value: string): void {
+    // FTS5 does not support UPDATE directly; delete + insert is the correct pattern.
+    this.db.prepare('DELETE FROM context_items_fts WHERE id = ?').run(id);
+    this.db
+      .prepare('INSERT INTO context_items_fts(id, key_tokens, value_tokens) VALUES (?, ?, ?)')
+      .run(id, tokenizeForIndex(key), tokenizeForIndex(value));
+  }
+
+  private ftsDelete(id: string): void {
+    this.db.prepare('DELETE FROM context_items_fts WHERE id = ?').run(id);
+  }
+
+  /**
+   * Returns the FTS MATCH parameter value for a list of terms and a searchIn
+   * scope. Returns null when no usable tokens can be produced.
+   *
+   * When searchIn is ['key'] or ['value'] the column prefix is embedded in the
+   * match expression; otherwise a plain token expression is returned.
+   */
+  private buildFtsMatchParam(terms: string[], searchIn: string[]): string | null {
+    const matchExpr = buildFtsQuery(terms);
+    if (!matchExpr) return null;
+
+    const tokens = matchExpr; // already a valid FTS5 MATCH expr
+    if (searchIn.includes('key') && !searchIn.includes('value')) {
+      return `key_tokens : ${tokens}`;
+    }
+    if (!searchIn.includes('key') && searchIn.includes('value')) {
+      return `value_tokens : ${tokens}`;
+    }
+    return tokens; // search both columns
+  }
 
   // Helper methods for DRY code
   private buildSortClause(sort?: string): string {
@@ -117,10 +208,13 @@ export class ContextRepository extends BaseRepository {
   }
 
   private getTotalCount(baseSql: string, params: any[]): number {
-    const countSql = baseSql.replace('SELECT *', 'SELECT COUNT(*) as count');
+    // Replace either "SELECT *" or "SELECT context_items.*" (FTS path) with a COUNT.
+    const countSql = baseSql
+      .replace('SELECT context_items.*', 'SELECT COUNT(*) as count')
+      .replace('SELECT *', 'SELECT COUNT(*) as count');
     const countStmt = this.db.prepare(countSql);
     const countResult = countStmt.get(...params) as any;
-    return countResult.count || 0;
+    return countResult?.count || 0;
   }
 
   save(sessionId: string, input: CreateContextItemInput): ContextItem {
@@ -136,6 +230,15 @@ export class ContextRepository extends BaseRepository {
       const sessionStmt = this.db.prepare('SELECT default_channel FROM sessions WHERE id = ?');
       const session = sessionStmt.get(sessionId) as any;
       channel = session?.default_channel || 'general';
+    }
+
+    // INSERT OR REPLACE may delete the old row (because of UNIQUE on session_id,key).
+    // Remove the stale FTS entry first so it does not linger after the replace.
+    const existing = this.db
+      .prepare('SELECT id FROM context_items WHERE session_id = ? AND key = ?')
+      .get(sessionId, validatedKey) as any;
+    if (existing) {
+      this.ftsDelete(existing.id);
     }
 
     const stmt = this.db.prepare(`
@@ -156,6 +259,9 @@ export class ContextRepository extends BaseRepository {
       input.isPrivate ? 1 : 0,
       channel
     );
+
+    // Keep FTS index in sync.
+    this.ftsUpsert(id, validatedKey, input.value);
 
     return this.getById(id)!;
   }
@@ -201,6 +307,36 @@ export class ContextRepository extends BaseRepository {
   }
 
   search(query: string, sessionId?: string, includePrivate: boolean = false): ContextItem[] {
+    this.ensureFtsReady();
+
+    const ftsParam = buildFtsQuery([query]);
+
+    if (ftsParam) {
+      // FTS5 path: join with context_items_fts for efficient full-text lookup.
+      let sql = `
+        SELECT context_items.* FROM context_items
+        INNER JOIN (
+          SELECT id FROM context_items_fts WHERE context_items_fts MATCH ?
+        ) _fts ON _fts.id = context_items.id
+      `;
+      const params: any[] = [ftsParam];
+
+      if (sessionId) {
+        if (includePrivate) {
+          sql += ' WHERE (context_items.is_private = 0 OR context_items.session_id = ?)';
+          params.push(sessionId);
+        } else {
+          sql += ' WHERE context_items.is_private = 0';
+        }
+      } else {
+        sql += ' WHERE context_items.is_private = 0';
+      }
+
+      sql += ' ORDER BY context_items.priority DESC, context_items.created_at DESC';
+      return this.db.prepare(sql).all(...params) as ContextItem[];
+    }
+
+    // Fallback: original LIKE-based search (e.g. very short single-char queries).
     let sql = `
       SELECT * FROM context_items 
       WHERE (key LIKE ? OR value LIKE ?)
@@ -264,13 +400,26 @@ export class ContextRepository extends BaseRepository {
     `;
     const params: any[] = [sessionId];
 
-    // Add search query with searchIn support
+    // Add search query with searchIn support — prefer FTS5, fall back to LIKE.
     if (query && (Array.isArray(query) ? query.length > 0 : true)) {
       const keywords = Array.isArray(query) ? query.filter(k => k.length > 0) : [query];
       if (keywords.length > 0) {
-        const clause = this.buildKeywordConditions(keywords, searchIn, params);
-        if (clause) {
-          sql += ` AND ${clause}`;
+        this.ensureFtsReady();
+        const ftsParam = this.buildFtsMatchParam(keywords, searchIn);
+        if (ftsParam) {
+          sql = sql.replace(
+            'SELECT * FROM context_items',
+            `SELECT context_items.* FROM context_items
+             INNER JOIN (SELECT id FROM context_items_fts WHERE context_items_fts MATCH ?) _fts
+             ON _fts.id = context_items.id`
+          );
+          // The FTS param must be the very first bind parameter.
+          params.unshift(ftsParam);
+        } else {
+          const clause = this.buildKeywordConditions(keywords, searchIn, params);
+          if (clause) {
+            sql += ` AND ${clause}`;
+          }
         }
       }
     }
@@ -372,20 +521,44 @@ export class ContextRepository extends BaseRepository {
       `);
 
       stmt.run(...values, id);
+
+      // Re-index if key or value changed.
+      if ('key' in fieldsToUpdate || 'value' in fieldsToUpdate) {
+        const row = this.db
+          .prepare('SELECT key, value FROM context_items WHERE id = ?')
+          .get(id) as any;
+        if (row) {
+          this.ftsUpsert(id, row.key, row.value);
+        }
+      }
     }
   }
 
   delete(id: string): void {
+    this.ftsDelete(id);
     const stmt = this.db.prepare('DELETE FROM context_items WHERE id = ?');
     stmt.run(id);
   }
 
   deleteBySessionId(sessionId: string): void {
+    // Remove all FTS entries for this session before deleting the rows.
+    const ids = this.db
+      .prepare('SELECT id FROM context_items WHERE session_id = ?')
+      .all(sessionId) as Array<{ id: string }>;
+    for (const { id } of ids) {
+      this.ftsDelete(id);
+    }
     const stmt = this.db.prepare('DELETE FROM context_items WHERE session_id = ?');
     stmt.run(sessionId);
   }
 
   deleteByKey(sessionId: string, key: string): void {
+    const row = this.db
+      .prepare('SELECT id FROM context_items WHERE session_id = ? AND key = ?')
+      .get(sessionId, key) as any;
+    if (row) {
+      this.ftsDelete(row.id);
+    }
     const stmt = this.db.prepare('DELETE FROM context_items WHERE session_id = ? AND key = ?');
     stmt.run(sessionId, key);
   }
@@ -401,8 +574,9 @@ export class ContextRepository extends BaseRepository {
 
     for (const item of items) {
       try {
+        const newId = this.generateId();
         stmt.run(
-          this.generateId(),
+          newId,
           toSessionId,
           item.key,
           item.value,
@@ -414,6 +588,7 @@ export class ContextRepository extends BaseRepository {
           item.channel || 'general',
           item.created_at
         );
+        this.ftsUpsert(newId, item.key, item.value);
         copied++;
       } catch (_error) {
         // Skip items that would cause unique constraint violations
@@ -466,13 +641,42 @@ export class ContextRepository extends BaseRepository {
   }
 
   searchAcrossSessions(query: string, currentSessionId?: string): ContextItem[] {
+    this.ensureFtsReady();
+
+    const ftsParam = buildFtsQuery([query]);
+
+    if (ftsParam) {
+      let sql = `
+        SELECT context_items.* FROM context_items
+        INNER JOIN (
+          SELECT id FROM context_items_fts WHERE context_items_fts MATCH ?
+        ) _fts ON _fts.id = context_items.id
+        WHERE context_items.is_private = 0
+      `;
+      const params: any[] = [ftsParam];
+
+      if (currentSessionId) {
+        sql = `
+          SELECT context_items.* FROM context_items
+          INNER JOIN (
+            SELECT id FROM context_items_fts WHERE context_items_fts MATCH ?
+          ) _fts ON _fts.id = context_items.id
+          WHERE (context_items.is_private = 0 OR context_items.session_id = ?)
+        `;
+        params.push(currentSessionId);
+      }
+
+      sql += ' ORDER BY context_items.priority DESC, context_items.created_at DESC';
+      return this.db.prepare(sql).all(...params) as ContextItem[];
+    }
+
+    // Fallback: LIKE-based search.
     let sql = `
       SELECT * FROM context_items 
       WHERE (key LIKE ? OR value LIKE ?) AND is_private = 0
     `;
     const params: any[] = [`%${query}%`, `%${query}%`];
 
-    // Include private items from current session if provided
     if (currentSessionId) {
       sql = `
         SELECT * FROM context_items 
@@ -555,13 +759,26 @@ export class ContextRepository extends BaseRepository {
       params.push(...sessions);
     }
 
-    // Add search query with searchIn support
+    // Add search query with searchIn support — prefer FTS5, fall back to LIKE.
     if (query && (Array.isArray(query) ? query.length > 0 : true)) {
       const keywords = Array.isArray(query) ? query.filter(k => k.length > 0) : [query];
       if (keywords.length > 0) {
-        const clause = this.buildKeywordConditions(keywords, searchIn, params);
-        if (clause) {
-          sql += ` AND ${clause}`;
+        this.ensureFtsReady();
+        const ftsParam = this.buildFtsMatchParam(keywords, searchIn);
+        if (ftsParam) {
+          sql = sql.replace(
+            'SELECT * FROM context_items',
+            `SELECT context_items.* FROM context_items
+             INNER JOIN (SELECT id FROM context_items_fts WHERE context_items_fts MATCH ?) _fts
+             ON _fts.id = context_items.id`
+          );
+          // FTS param must be the first bind position.
+          params.unshift(ftsParam);
+        } else {
+          const clause = this.buildKeywordConditions(keywords, searchIn, params);
+          if (clause) {
+            sql += ` AND ${clause}`;
+          }
         }
       }
     }
