@@ -47,6 +47,9 @@ export class DatabaseManager {
     // Create tables (will use CREATE TABLE IF NOT EXISTS, so safe to run after migrations)
     this.createTables();
 
+    // Apply column migrations for existing databases (must run after createTables)
+    this.applyColumnMigrations();
+
     // Apply watcher migrations if needed
     this.applyWatcherMigrations();
 
@@ -82,6 +85,7 @@ export class DatabaseManager {
         size INTEGER DEFAULT 0,
         is_private INTEGER DEFAULT 0,
         channel TEXT DEFAULT 'general',
+        workspace TEXT,
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
         FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE CASCADE,
@@ -139,6 +143,7 @@ export class DatabaseManager {
       CREATE INDEX IF NOT EXISTS idx_context_items_priority ON context_items(priority);
       CREATE INDEX IF NOT EXISTS idx_context_items_private ON context_items(is_private);
       CREATE INDEX IF NOT EXISTS idx_context_items_channel ON context_items(channel);
+      CREATE INDEX IF NOT EXISTS idx_context_items_workspace ON context_items(workspace);
       CREATE INDEX IF NOT EXISTS idx_context_items_created ON context_items(created_at);
       CREATE INDEX IF NOT EXISTS idx_context_items_session_created ON context_items(session_id, created_at);
       CREATE INDEX IF NOT EXISTS idx_file_cache_session ON file_cache(session_id);
@@ -372,16 +377,22 @@ export class DatabaseManager {
 
       CREATE INDEX IF NOT EXISTS idx_migrations_version ON migrations(version);
       CREATE INDEX IF NOT EXISTS idx_migrations_applied ON migrations(applied_at);
-
-      -- Migration for existing databases - add new columns if they don't exist
-      ${this.getMigrationSQL()}
     `);
   }
 
   private getMigrationSQL(): string {
     // The shared columns are already defined in the CREATE TABLE statement above
-    // This method is kept for potential future migrations
-    return '';
+    // Add workspace column to context_items if it doesn't exist (for existing databases)
+    return this.addColumnIfNotExists('context_items', 'workspace', 'TEXT');
+  }
+
+  private applyColumnMigrations(): void {
+    // Apply column additions for existing databases.
+    // These use ALTER TABLE and must run AFTER the CREATE TABLE statements.
+    const sql = this.getMigrationSQL();
+    if (sql) {
+      this.db.exec(sql);
+    }
   }
 
   private addColumnIfNotExists(table: string, column: string, definition: string): string {

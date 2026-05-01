@@ -25,6 +25,7 @@ export interface ContextItem {
   created_at: string;
   updated_at: string;
   channel?: string;
+  workspace?: string;
 }
 
 export interface FileCache {
@@ -98,6 +99,7 @@ export interface CreateContextItemInput {
   metadata?: string;
   isPrivate?: boolean;
   channel?: string;
+  workspace?: string;
 }
 
 export interface CreateSessionInput {
