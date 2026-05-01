@@ -131,19 +131,20 @@ export class ContextRepository extends BaseRepository {
     const size = this.calculateSize(input.value);
 
     // Determine channel - use explicit channel, or session default, or 'general'
+    // Also fetch working_directory for workspace fallback in the same query
     let channel = input.channel;
-    if (!channel) {
-      const sessionStmt = this.db.prepare('SELECT default_channel FROM sessions WHERE id = ?');
-      const session = sessionStmt.get(sessionId) as any;
-      channel = session?.default_channel || 'general';
-    }
-
-    // Determine workspace - use explicit workspace, or fall back to session's working_directory
     let workspace = input.workspace || null;
-    if (!workspace) {
-      const sessionStmt = this.db.prepare('SELECT working_directory FROM sessions WHERE id = ?');
+    if (!channel || !workspace) {
+      const sessionStmt = this.db.prepare(
+        'SELECT default_channel, working_directory FROM sessions WHERE id = ?'
+      );
       const session = sessionStmt.get(sessionId) as any;
-      workspace = session?.working_directory || null;
+      if (!channel) {
+        channel = session?.default_channel || 'general';
+      }
+      if (!workspace) {
+        workspace = session?.working_directory || null;
+      }
     }
 
     const stmt = this.db.prepare(`

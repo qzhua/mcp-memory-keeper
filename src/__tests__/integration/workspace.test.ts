@@ -140,7 +140,8 @@ describe('Workspace Feature Tests', () => {
       });
 
       expect(result.items.length).toBe(2);
-      expect(result.items.every(item => item.workspace === '/projects/project-a')).toBe(true);
+      expect(result.items.length).toBeGreaterThan(0);
+      result.items.forEach(item => expect(item.workspace).toBe('/projects/project-a'));
     });
 
     it('should return all items when workspace not specified', () => {
@@ -202,7 +203,8 @@ describe('Workspace Feature Tests', () => {
       });
 
       expect(result.items.length).toBe(2);
-      expect(result.items.every(item => item.workspace === '/projects/my-project')).toBe(true);
+      expect(result.items.length).toBeGreaterThan(0);
+      result.items.forEach(item => expect(item.workspace).toBe('/projects/my-project'));
     });
   });
 
@@ -252,7 +254,8 @@ describe('Workspace Feature Tests', () => {
       });
 
       expect(result.items.length).toBe(2);
-      expect(result.items.every(item => item.workspace === '/projects/shared-project')).toBe(true);
+      expect(result.items.length).toBeGreaterThan(0);
+      result.items.forEach(item => expect(item.workspace).toBe('/projects/shared-project'));
     });
   });
 });
