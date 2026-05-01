@@ -36,19 +36,13 @@ export class ContextRepository extends BaseRepository {
   private ensureFtsReady(): void {
     if (this.ftsReady) return;
 
-    const ftsCount = (
-      this.db
-        .prepare(
-          `SELECT COUNT(*) as n FROM context_items_fts
-                  WHERE id != '__needs_rebuild__'`
-        )
-        .get() as any
-    ).n as number;
+    const ftsCount = (this.db.prepare('SELECT COUNT(*) as n FROM context_items_fts').get() as any)
+      .n as number;
 
     const itemCount = (this.db.prepare('SELECT COUNT(*) as n FROM context_items').get() as any)
       .n as number;
 
-    if (ftsCount < itemCount) {
+    if (ftsCount !== itemCount) {
       this.populateFts();
     } else {
       this.ftsReady = true;
@@ -108,6 +102,46 @@ export class ContextRepository extends BaseRepository {
       return `value_tokens : ${tokens}`;
     }
     return tokens; // search both columns
+  }
+
+  /**
+   * Injects an FTS5 keyword filter into a base `SELECT * FROM context_items`
+   * query, or falls back to LIKE conditions when no FTS tokens are available.
+   *
+   * @param sql      Base query starting with `SELECT * FROM context_items WHERE …`
+   * @param params   Bind-parameter array (mutated in-place).
+   * @param keywords Raw keyword strings to search for.
+   * @param searchIn Which columns to search: 'key', 'value', or both.
+   * @returns        Modified SQL string.
+   */
+  private applyKeywordFilter(
+    sql: string,
+    params: any[],
+    keywords: string[],
+    searchIn: string[]
+  ): string {
+    this.ensureFtsReady();
+    const ftsParam = this.buildFtsMatchParam(keywords, searchIn);
+    if (ftsParam) {
+      // Replace the opening SELECT so we can add the FTS JOIN.
+      // The base SQL is always built in this class and starts with a known
+      // `SELECT * FROM context_items` prefix, so the replacement is safe.
+      const modified = sql.replace(
+        'SELECT * FROM context_items',
+        `SELECT context_items.* FROM context_items
+             INNER JOIN (SELECT id FROM context_items_fts WHERE context_items_fts MATCH ?) _fts
+             ON _fts.id = context_items.id`
+      );
+      // FTS param must come before the existing WHERE params.
+      params.unshift(ftsParam);
+      return modified;
+    }
+    // LIKE fallback.
+    const clause = this.buildKeywordConditions(keywords, searchIn, params);
+    if (clause) {
+      return sql + ` AND ${clause}`;
+    }
+    return sql;
   }
 
   // Helper methods for DRY code
@@ -404,23 +438,7 @@ export class ContextRepository extends BaseRepository {
     if (query && (Array.isArray(query) ? query.length > 0 : true)) {
       const keywords = Array.isArray(query) ? query.filter(k => k.length > 0) : [query];
       if (keywords.length > 0) {
-        this.ensureFtsReady();
-        const ftsParam = this.buildFtsMatchParam(keywords, searchIn);
-        if (ftsParam) {
-          sql = sql.replace(
-            'SELECT * FROM context_items',
-            `SELECT context_items.* FROM context_items
-             INNER JOIN (SELECT id FROM context_items_fts WHERE context_items_fts MATCH ?) _fts
-             ON _fts.id = context_items.id`
-          );
-          // The FTS param must be the very first bind parameter.
-          params.unshift(ftsParam);
-        } else {
-          const clause = this.buildKeywordConditions(keywords, searchIn, params);
-          if (clause) {
-            sql += ` AND ${clause}`;
-          }
-        }
+        sql = this.applyKeywordFilter(sql, params, keywords, searchIn);
       }
     }
 
@@ -763,23 +781,7 @@ export class ContextRepository extends BaseRepository {
     if (query && (Array.isArray(query) ? query.length > 0 : true)) {
       const keywords = Array.isArray(query) ? query.filter(k => k.length > 0) : [query];
       if (keywords.length > 0) {
-        this.ensureFtsReady();
-        const ftsParam = this.buildFtsMatchParam(keywords, searchIn);
-        if (ftsParam) {
-          sql = sql.replace(
-            'SELECT * FROM context_items',
-            `SELECT context_items.* FROM context_items
-             INNER JOIN (SELECT id FROM context_items_fts WHERE context_items_fts MATCH ?) _fts
-             ON _fts.id = context_items.id`
-          );
-          // FTS param must be the first bind position.
-          params.unshift(ftsParam);
-        } else {
-          const clause = this.buildKeywordConditions(keywords, searchIn, params);
-          if (clause) {
-            sql += ` AND ${clause}`;
-          }
-        }
+        sql = this.applyKeywordFilter(sql, params, keywords, searchIn);
       }
     }
 

@@ -11,7 +11,7 @@ function getJieba(): Jieba {
 }
 
 // Matches tokens that carry no search value: pure punctuation / operators / whitespace.
-// Alphanumeric ASCII and CJK characters (BMP + ext-B) are always kept.
+// Alphanumeric ASCII and CJK Unified Ideographs (BMP + Extension A) are always kept.
 const NOISE_TOKEN_RE = /^[^a-zA-Z0-9\u4e00-\u9fff\u3400-\u4dbf]+$/;
 
 /**
